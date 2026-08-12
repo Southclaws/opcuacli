@@ -1,0 +1,108 @@
+# opcua connection profiles.
+#
+# Copy this to the path `opcua config path` prints, which is normally
+#
+#   Windows   %AppData%\opcua\config.yaml
+#   macOS     ~/Library/Application Support/opcua/config.yaml
+#   Linux     $XDG_CONFIG_HOME/opcua/config.yaml, or ~/.config/opcua/config.yaml
+#
+# or point at any file directly:
+#
+#   opcua --config ./plant.yaml server info
+#   $env:OPCUA_CONFIG = "C:/opcua/plant.yaml"      # PowerShell
+#
+# Every setting here has a matching flag, so a profile is a default rather than a
+# requirement: `opcua browse --profile line-1 --endpoint opc.tcp://other:4840`
+# uses the profile's credentials against a different server.
+#
+# `opcua config init` writes a profile interactively, asking the server which
+# security policies and user tokens it actually offers.
+
+# Which profile a command uses when --profile is not given. With exactly one
+# profile this line is unnecessary.
+default: line-1
+
+profiles:
+  # A PLC or gateway on the plant network, secured and authenticated. This is the
+  # shape most production servers need.
+  line-1:
+    description: Filling line 1 PLC
+    endpoints:
+      - opc.tcp://line-1.plant.example:4840
+    security:
+      # A named policy is used as given, and the connection fails rather than
+      # quietly falling back to something weaker. Use `auto` to take the
+      # strongest endpoint the server offers.
+      policy: Basic256Sha256
+      mode: SignAndEncrypt
+      # The client key pair. Leave both unset to have one generated into the
+      # configuration directory on first use; the server operator has to trust it
+      # once, and it stays the same on every later run.
+      #
+      # certificate: C:/ProgramData/opcua/certs/cert.pem
+      # privateKey: C:/ProgramData/opcua/certs/key.pem
+    auth:
+      mode: username
+      username: operator
+      # A password here is stored in plain text, and on Windows the file mode
+      # cannot restrict who reads it. Prefer a file the operating system protects,
+      # or the OPCUA_PASSWORD environment variable.
+      passwordFile: C:/ProgramData/opcua/line-1.password
+    session:
+      timeout: 20m
+      requestTimeout: 10s
+
+  # A redundant pair. The endpoints are a failover order: every command tries
+  # them in turn, and a long-running `opcua monitor` re-dials down the list when
+  # a session is lost. `opcua server redundancy` reports what the server expects
+  # of a client.
+  scada:
+    description: SCADA server pair, cold failover
+    endpoints:
+      - opc.tcp://scada-a.plant.example:4840
+      - opc.tcp://scada-b.plant.example:4840
+    security:
+      policy: auto
+      mode: auto
+    auth:
+      mode: certificate
+      # Certificate authentication proves who the client is with the same key
+      # pair that protects the channel.
+    session:
+      timeout: 30m
+    subscription:
+      # The default publishing interval for `monitor` and the explorer's watch
+      # panel. Faster than the server samples only produces empty publishes.
+      interval: 500ms
+      queueSize: 10
+
+  # An unsecured server, which is common in a lab or on a simulator. Reaching one
+  # of these needs no certificate at all.
+  bench:
+    description: Bench simulator
+    endpoints:
+      - opc.tcp://localhost:4840
+    security:
+      policy: None
+      mode: None
+    auth:
+      mode: anonymous
+
+  # A server whose certificate is expired or otherwise unfit. The channel is
+  # refused by default, because that check is usually catching a real problem;
+  # `insecure` skips it, and belongs to a profile you have decided about rather
+  # than to a flag someone reaches for by habit.
+  legacy:
+    description: Legacy server with an expired certificate
+    endpoints:
+      - opc.tcp://legacy.plant.example:4840
+    security:
+      policy: Basic256Sha256
+      mode: Sign
+      insecure: true
+    auth:
+      mode: anonymous
+    session:
+      # An old server may need longer than the ten second default.
+      requestTimeout: 30s
+      dialTimeout: 30s

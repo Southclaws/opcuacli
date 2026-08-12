@@ -1,0 +1,2550 @@
+# yaml-language-server: $schema=../opencli/schema/opencli.schema.json
+$schema: ../opencli/schema/opencli.schema.json
+
+opencli: "0.1.0"
+
+info:
+  title: opcua
+  binaryName: opcua
+  version: "0.1.0"
+  description: Explore, query and monitor OPC UA servers from the terminal.
+  longDescription: |
+    **opcua** is a terminal client for OPC UA servers.
+
+    It discovers endpoints, walks the address space, reads and writes values,
+    calls methods, reads history, inspects types and metadata, and streams live
+    subscriptions. Connection details live in a config file of named profiles,
+    and every profile setting can be overridden with a flag for one-off checks.
+
+    Run `opcua tui` for a full-screen address space explorer.
+  homepage: https://github.com/Southclaws/opcuacli
+  contact:
+    name: opcuacli
+    url: https://github.com/Southclaws/opcuacli
+  license:
+    name: MIT
+
+# Connection settings are global so any command can be pointed at any server
+# without a profile. Values not given here fall back to the active profile in
+# the config file, then to a built-in default.
+#
+# Shorthands -p, -e, -u and -v are reserved package-wide by these flags;
+# command-local flags must not reuse them.
+flags:
+  - name: config
+    description: Path to the configuration file.
+    type: path
+    envVar: OPCUA_CONFIG
+  - name: profile
+    short: p
+    description: Configuration profile to connect with.
+    envVar: OPCUA_PROFILE
+  - name: endpoint
+    short: e
+    description: Endpoint URL; repeat to declare a failover order.
+    repeatable: true
+    envVar: OPCUA_ENDPOINT
+    placeholder: URL
+  - name: username
+    short: u
+    description: User name for username/password authentication.
+    envVar: OPCUA_USERNAME
+  - name: password
+    description: Password for username/password authentication.
+    sensitive: true
+    envVar: OPCUA_PASSWORD
+  - name: password-file
+    description: Read the password from a file, or - for stdin.
+    type: file
+  - name: auth
+    description: "Authentication mode: auto, anonymous, username, certificate."
+    default: auto
+  - name: policy
+    description: "Security policy: auto, None, Basic256Sha256, Aes256Sha256RsaPss, ..."
+    default: auto
+  - name: mode
+    description: "Message security mode: auto, None, Sign, SignAndEncrypt."
+    default: auto
+  - name: cert
+    description: Client certificate in PEM or DER form.
+    type: path
+    envVar: OPCUA_CERT
+  - name: key
+    description: Client private key in PEM or DER form.
+    type: path
+    envVar: OPCUA_KEY
+  - name: insecure
+    description: Accept the server certificate without verifying it.
+    type: boolean
+  - name: timeout
+    description: Deadline for a single service request.
+    format: duration
+    default: 10s
+    envVar: OPCUA_TIMEOUT
+  - name: dial-timeout
+    description: Deadline for establishing the secure channel.
+    format: duration
+    default: 10s
+  - name: session-timeout
+    description: Requested session lifetime.
+    format: duration
+    default: 20m
+  - name: no-reconnect
+    description: Fail instead of transparently restoring a dropped session.
+    type: boolean
+  - name: app-uri
+    description: Application URI announced to the server.
+  - name: locale
+    description: Preferred locale for localized text; repeatable, most wanted first.
+    repeatable: true
+  - name: verbose
+    short: v
+    description: Increase log verbosity (-v, -vv).
+    count: true
+  - name: trace
+    description: Log every OPC UA service call on stderr.
+    type: boolean
+  - name: no-color
+    description: Disable colour and styling in output.
+    type: boolean
+    envVar: NO_COLOR
+
+exitCodes:
+  - code: 0
+    label: OK
+    description: The command completed successfully.
+  - code: 1
+    label: Error
+    description: A generic runtime error occurred.
+  - code: 2
+    label: ConnectionFailed
+    description: No endpoint in the failover order could be reached.
+  - code: 3
+    label: ServiceFault
+    description: The server returned a bad status code for the request.
+  - code: 4
+    label: NotFound
+    description: A requested node, path or profile does not exist.
+
+commands:
+  # ─── discovery ────────────────────────────────────────────────────────────
+  - name: discover
+    aliases: [disco]
+    description: Find servers and inspect the endpoints they offer.
+    tags: [discovery]
+    commands:
+      - name: endpoints
+        operationId: discoverEndpoints
+        aliases: [ep]
+        description: List the endpoints an OPC UA server offers.
+        longDescription: |
+          Calls GetEndpoints on the discovery URL and reports every endpoint
+          with its security policy, message security mode and accepted user
+          token types.
+
+          This is an unauthenticated call: it needs no session, so it is the
+          first thing to try when a connection is refused. The `SEC` column
+          shows the policy short name and the mode, which is exactly what
+          `--policy` and `--mode` expect.
+        arguments:
+          - $ref: "#/components/arguments/endpoint"
+        flags:
+          - name: show-certificate
+            description: Include the server certificate of each endpoint.
+            type: boolean
+          - name: transport
+            description: Only report endpoints using this transport profile.
+          - $ref: "#/components/flags/format-table"
+        examples:
+          - command: opcua discover endpoints opc.tcp://localhost:4840
+            description: List every endpoint of a local server.
+          - command: opcua discover endpoints --format json
+            description: Machine-readable endpoints for the active profile.
+        output:
+          formatFlag: format
+          formats:
+            - format: table
+              default: true
+              description: Aligned table, one row per endpoint.
+            - format: plain
+              description: Tab-separated rows for grep and awk.
+            - format: json
+              description: A JSON array of endpoints.
+              schema:
+                $ref: "#/components/schemas/EndpointList"
+            - format: yaml
+              description: The endpoints as YAML.
+              schema:
+                $ref: "#/components/schemas/EndpointList"
+
+      - name: servers
+        operationId: discoverServers
+        description: List the servers registered with a discovery endpoint.
+        longDescription: |
+          Calls FindServers, which a local discovery server answers with every
+          server that has registered with it.
+        arguments:
+          - $ref: "#/components/arguments/endpoint"
+        flags:
+          - name: uri
+            description: Only report servers whose application URI matches; repeatable.
+            repeatable: true
+          - $ref: "#/components/flags/format-table"
+        output:
+          formatFlag: format
+          formats:
+            - format: table
+              default: true
+              description: Aligned table, one row per server.
+            - format: plain
+              description: Tab-separated rows for grep and awk.
+            - format: json
+              schema:
+                $ref: "#/components/schemas/ServerList"
+            - format: yaml
+              schema:
+                $ref: "#/components/schemas/ServerList"
+
+      - name: network
+        operationId: discoverNetwork
+        description: List servers known to a discovery server via mDNS.
+        longDescription: |
+          Calls FindServersOnNetwork. Only a discovery server that participates
+          in multicast announcement answers this; a plain server returns
+          BadServiceUnsupported.
+        arguments:
+          - $ref: "#/components/arguments/endpoint"
+        flags:
+          - name: start-record
+            description: Record counter to resume from.
+            type: integer
+            default: 0
+          - name: max-records
+            description: Maximum records to return (0 = server's choice).
+            type: integer
+            default: 0
+          - name: capability
+            description: Only report servers with this server capability; repeatable.
+            repeatable: true
+          - $ref: "#/components/flags/format-table"
+        output:
+          formatFlag: format
+          formats:
+            - format: table
+              default: true
+            - format: plain
+            - format: json
+              schema:
+                $ref: "#/components/schemas/NetworkServerList"
+            - format: yaml
+              schema:
+                $ref: "#/components/schemas/NetworkServerList"
+
+  # ─── address space navigation ─────────────────────────────────────────────
+  - name: browse
+    operationId: browse
+    aliases: [ls]
+    description: List the references of a node.
+    longDescription: |
+      Walks the address space from a starting node. With the default depth of
+      1 this lists the immediate children, like `ls`; raise `--depth` to
+      recurse, and the tree renderer draws the hierarchy.
+
+      Only hierarchical references are followed by default, which is what
+      makes the result look like a filesystem. Pass `--ref-type` to follow a
+      different reference, or `--ref-type all` for every reference including
+      type definitions and modelling rules.
+
+      Add `--values` to read the Value attribute of every variable found, so
+      one call gives both the shape of a subtree and its current data.
+    tags: [browse]
+    arguments:
+      - name: NODE
+        description: Node to browse from. Defaults to the Objects folder.
+        placeholder: node-id
+        required: false
+        default: i=85
+    flags:
+      - name: depth
+        short: d
+        description: Levels to descend (1 = immediate children).
+        type: integer
+        default: 1
+      - name: direction
+        description: "Reference direction: forward, inverse, both."
+        choices: [forward, inverse, both]
+        default: forward
+      - name: ref-type
+        description: Reference type to follow, by name, node id, or all.
+        default: HierarchicalReferences
+      - name: no-subtypes
+        description: Do not follow subtypes of the selected reference type.
+        type: boolean
+      - name: class
+        description: "Only include these node classes: object, variable, method, ..."
+        repeatable: true
+        splitOnComma: true
+        choices:
+          [
+            object,
+            variable,
+            method,
+            objecttype,
+            variabletype,
+            referencetype,
+            datatype,
+            view,
+          ]
+      - name: filter
+        description: Only include nodes whose name matches this pattern.
+      - name: regex
+        description: Treat --filter as a regular expression.
+        type: boolean
+      - name: values
+        description: Read the value of every variable that is found.
+        type: boolean
+      - name: limit
+        description: Stop after this many nodes (0 = no limit).
+        type: integer
+        default: 0
+      - $ref: "#/components/flags/format-tree"
+    examples:
+      - command: opcua browse
+        description: List the Objects folder of the active profile's server.
+      - command: opcua browse i=2253 --depth 3
+        description: Walk three levels of the Server object.
+      - command: opcua browse --depth 0 --values --class variable
+        description: Read every variable in the whole address space.
+      - command: opcua browse 'ns=2;s=Machine' --ref-type all --format json
+        description: Every reference of a node, as JSON.
+    output:
+      formatFlag: format
+      formats:
+        - format: tree
+          default: true
+          description: Indented tree with node classes and values.
+        - format: table
+          description: One row per node, with the browse path.
+        - format: plain
+          description: Tab-separated rows for grep and awk.
+        - format: json
+          description: A JSON array of nodes.
+          schema:
+            $ref: "#/components/schemas/NodeList"
+        - format: yaml
+          description: The nodes as YAML.
+          schema:
+            $ref: "#/components/schemas/NodeList"
+        - format: jsonl
+          description: One node per line, emitted as the walk proceeds.
+          schema:
+            $ref: "#/components/schemas/Node"
+
+  - name: find
+    operationId: find
+    aliases: [search]
+    description: Search the address space for nodes by name.
+    longDescription: |
+      Walks the address space from `--root` and reports nodes whose name
+      matches PATTERN. Matching is a case-insensitive substring test unless
+      `--regex` is given.
+
+      This is a client-side crawl, not a server-side query, so bound it with
+      `--max-depth` and `--limit` on a large address space.
+    tags: [browse]
+    arguments:
+      - name: PATTERN
+        description: Text or regular expression to match against node names.
+        placeholder: pattern
+        required: true
+    flags:
+      - name: root
+        description: Node to search from.
+        default: i=84
+      - name: max-depth
+        description: Levels to descend (0 = no limit).
+        type: integer
+        default: 8
+      - name: match
+        description: "Which name to match: any, browse-name, display-name, node-id."
+        choices: [any, browse-name, display-name, node-id]
+        default: any
+      - name: regex
+        description: Treat PATTERN as a regular expression.
+        type: boolean
+      - name: class
+        description: Only report these node classes.
+        repeatable: true
+        splitOnComma: true
+        choices:
+          [
+            object,
+            variable,
+            method,
+            objecttype,
+            variabletype,
+            referencetype,
+            datatype,
+            view,
+          ]
+      - name: namespace
+        description: Only report nodes in this namespace index; repeatable.
+        repeatable: true
+        splitOnComma: true
+      - name: values
+        description: Read the value of every variable that matches.
+        type: boolean
+      - name: limit
+        description: Stop after this many matches (0 = no limit).
+        type: integer
+        default: 100
+      - $ref: "#/components/flags/format-table-jsonl"
+    examples:
+      - command: opcua find temperature
+        description: Find nodes with "temperature" in the name.
+      - command: opcua find '^Sensor\d+$' --regex --class variable --values
+        description: Find sensor variables by pattern and read them.
+    output:
+      formatFlag: format
+      formats:
+        - format: table
+          default: true
+          description: One row per match, with the browse path.
+        - format: plain
+          description: Tab-separated rows for grep and awk.
+        - format: json
+          schema:
+            $ref: "#/components/schemas/NodeList"
+        - format: yaml
+          schema:
+            $ref: "#/components/schemas/NodeList"
+        - format: jsonl
+          description: One match per line, emitted as the crawl proceeds.
+          schema:
+            $ref: "#/components/schemas/Node"
+
+  - name: resolve
+    operationId: resolve
+    aliases: [path]
+    description: Translate a browse path into a node id.
+    longDescription: |
+      Calls TranslateBrowsePathsToNodeIds, which resolves a path of browse
+      names against the server rather than crawling it.
+
+      Path elements are separated by `/`. An element may carry an explicit
+      namespace as `2:Name`; without one the namespace of `--namespace` is
+      used. Paths are relative to `--root`, which defaults to the Objects
+      folder, so `Server/ServerStatus/CurrentTime` resolves from there.
+    tags: [browse]
+    arguments:
+      - name: PATH
+        description: Slash-separated browse path, e.g. Server/ServerStatus.
+        placeholder: path
+        required: true
+        variadic: true
+    flags:
+      - name: root
+        description: Node the path is relative to.
+        default: i=85
+      - name: namespace
+        description: Namespace index for path elements that do not name one.
+        type: integer
+        default: 0
+      - $ref: "#/components/flags/format-plain"
+    examples:
+      - command: opcua resolve Server/ServerStatus/CurrentTime
+        description: Resolve a well-known path to its node id.
+      - command: opcua resolve --root i=84 Objects/Server
+        description: Resolve from the root folder instead.
+    output:
+      formatFlag: format
+      formats:
+        - format: plain
+          default: true
+          description: The node id, one per line, ready to pipe.
+        - format: table
+          description: Path and node id side by side.
+        - format: json
+          schema:
+            $ref: "#/components/schemas/ResolvedPathList"
+        - format: yaml
+          schema:
+            $ref: "#/components/schemas/ResolvedPathList"
+
+  - name: references
+    operationId: references
+    aliases: [refs]
+    description: List every reference of a node with its reference type.
+    longDescription: |
+      Where `browse` presents the address space as a hierarchy, this presents
+      one node's raw references: the reference type, its direction, and the
+      target. Use it to see type definitions, modelling rules, event sources
+      and other non-hierarchical links.
+    tags: [browse]
+    arguments:
+      - $ref: "#/components/arguments/node"
+    flags:
+      - name: direction
+        description: "Reference direction: forward, inverse, both."
+        choices: [forward, inverse, both]
+        default: both
+      - name: ref-type
+        description: Reference type to follow, by name, node id, or all.
+        default: all
+      - name: no-subtypes
+        description: Do not follow subtypes of the selected reference type.
+        type: boolean
+      - name: class
+        description: Only report references to these node classes.
+        repeatable: true
+        splitOnComma: true
+        choices:
+          [
+            object,
+            variable,
+            method,
+            objecttype,
+            variabletype,
+            referencetype,
+            datatype,
+            view,
+          ]
+      - $ref: "#/components/flags/format-table"
+    output:
+      formatFlag: format
+      formats:
+        - format: table
+          default: true
+        - format: plain
+        - format: json
+          schema:
+            $ref: "#/components/schemas/ReferenceList"
+        - format: yaml
+          schema:
+            $ref: "#/components/schemas/ReferenceList"
+
+  # ─── values ───────────────────────────────────────────────────────────────
+  - name: read
+    operationId: read
+    aliases: [get]
+    description: Read attributes of one or more nodes.
+    longDescription: |
+      Reads the Value attribute of every node given, in a single Read service
+      call. Pass `--attribute` to read something else, repeating it for
+      several attributes.
+
+      Every result carries its own status code, so a partial failure reports
+      per node rather than failing the command. `--index-range` reads a slice
+      of an array value, e.g. `0:9` or `2` or `1:3,0:2` for a matrix.
+    tags: [values]
+    arguments:
+      - name: NODE
+        description: Nodes to read.
+        placeholder: node-id
+        required: true
+        variadic: true
+    flags:
+      - name: attribute
+        short: a
+        description: Attribute to read; repeatable. Defaults to Value.
+        repeatable: true
+        splitOnComma: true
+      - name: index-range
+        description: Range of an array value to read, e.g. 0:9.
+      - name: max-age
+        description: Accept a cached value up to this old.
+        format: duration
+        default: 0s
+      - name: timestamps
+        description: "Timestamps to return: source, server, both, neither."
+        choices: [source, server, both, neither]
+        default: both
+      - name: stdin
+        description: Read additional node ids from stdin, one per line.
+        type: boolean
+      - $ref: "#/components/flags/format-table-jsonl"
+    stdin:
+      description: Node ids, one per line, when --stdin is set.
+      format: text
+    examples:
+      - command: opcua read 'ns=2;s=Temperature'
+        description: Read one value.
+      - command: opcua read i=2258 i=2259 --format json
+        description: Read the server time and state as JSON.
+      - command: opcua read 'ns=3;i=1001' --attribute Value,DataType,AccessLevel
+        description: Read several attributes of one node.
+      - command: opcua find sensor --format plain | opcua read --stdin
+        description: Read every node that a search turned up.
+    output:
+      formatFlag: format
+      formats:
+        - format: table
+          default: true
+          description: One row per attribute read, with status and timestamps.
+        - format: plain
+          description: Just the values, tab-separated, for scripts.
+        - format: json
+          schema:
+            $ref: "#/components/schemas/ReadResultList"
+        - format: yaml
+          schema:
+            $ref: "#/components/schemas/ReadResultList"
+        - format: jsonl
+          description: One result per line.
+          schema:
+            $ref: "#/components/schemas/ReadResult"
+
+  - name: write
+    operationId: write
+    aliases: [set]
+    description: Write a value to a node.
+    longDescription: |
+      Writes VALUE to the Value attribute of NODE.
+
+      The OPC UA type of the value matters: a server rejects a write whose
+      variant type does not match the node's DataType. By default the node's
+      DataType attribute is read first and VALUE is parsed into that type, so
+      `opcua write 'ns=2;s=Setpoint' 21.5` does the right thing. Pass `--type`
+      to force a type, `--array` for a comma-separated list, or `--json` to
+      supply the value as JSON.
+    tags: [values]
+    arguments:
+      - $ref: "#/components/arguments/node"
+      - name: VALUE
+        description: Value to write, parsed according to --type.
+        placeholder: value
+        required: true
+    flags:
+      - name: type
+        short: t
+        description: OPC UA type to write, or auto to use the node's DataType.
+        default: auto
+      - name: attribute
+        short: a
+        description: Attribute to write.
+        default: Value
+      - name: index-range
+        description: Range of the array to overwrite, e.g. 0:9.
+      - name: array
+        description: Parse VALUE as a comma-separated array.
+        type: boolean
+      - name: json
+        description: Parse VALUE as JSON.
+        type: boolean
+      - name: yes
+        short: y
+        description: Skip the confirmation prompt.
+        type: boolean
+      - name: dry-run
+        short: n
+        description: Show what would be written without writing it.
+        type: boolean
+      - $ref: "#/components/flags/format-plain-nolist"
+    flagGroups:
+      - type: mutuallyExclusive
+        flags: [array, json]
+        description: A value is either a comma-separated array or JSON, not both.
+    examples:
+      - command: opcua write 'ns=2;s=Setpoint' 21.5
+        description: Write a value, inferring its type from the node.
+      - command: opcua write 'ns=2;s=Enabled' true --type boolean
+        description: Force the written type.
+      - command: opcua write 'ns=2;s=Window' 1,2,3 --array --type int32
+        description: Write an array of Int32.
+      - command: opcua write 'ns=2;s=Setpoint' 30 --dry-run
+        description: Check a write without performing it.
+    output:
+      formatFlag: format
+      formats:
+        - format: plain
+          default: true
+          description: A one-line confirmation of the write.
+        - format: json
+          schema:
+            $ref: "#/components/schemas/WriteResult"
+        - format: yaml
+          schema:
+            $ref: "#/components/schemas/WriteResult"
+
+  - name: call
+    operationId: call
+    aliases: [invoke]
+    description: Call a method on an object.
+    longDescription: |
+      Calls METHOD on OBJECT with the arguments given.
+
+      The method's InputArguments property is read first, so each argument is
+      parsed into the type the method actually declares and a wrong argument
+      count is caught before the call. Pass `--arg-type` to override the
+      inferred type of an argument, repeating it in argument order.
+    tags: [values]
+    arguments:
+      - name: OBJECT
+        description: Object the method belongs to.
+        placeholder: object-id
+        required: true
+      - name: METHOD
+        description: Method to call, as a node id or a browse name on OBJECT.
+        placeholder: method
+        required: true
+      - name: ARGUMENT
+        description: Input arguments, in the order the method declares them.
+        placeholder: arg
+        required: false
+        variadic: true
+    flags:
+      - name: arg-type
+        description: Force the type of an argument; repeatable, in order.
+        repeatable: true
+      - name: json
+        description: Parse each argument as JSON.
+        type: boolean
+      - name: describe
+        description: Print the method signature and exit without calling it.
+        type: boolean
+      - $ref: "#/components/flags/format-plain-nolist"
+    examples:
+      - command: opcua call i=2253 'ns=2;s=Restart'
+        description: Call a method with no arguments.
+      - command: opcua call 'ns=2;s=Boiler' SetTemperature 21.5
+        description: Call a method by browse name with one argument.
+      - command: opcua call 'ns=2;s=Boiler' SetTemperature --describe
+        description: Show what arguments the method expects.
+    output:
+      formatFlag: format
+      formats:
+        - format: plain
+          default: true
+          description: Output arguments, one per line.
+        - format: json
+          schema:
+            $ref: "#/components/schemas/CallResult"
+        - format: yaml
+          schema:
+            $ref: "#/components/schemas/CallResult"
+
+  - name: history
+    description: Read historical values and events.
+    tags: [values, history]
+    commands:
+      - name: read
+        operationId: historyRead
+        aliases: [values]
+        description: Read archived values of a node over a time range.
+        longDescription: |
+          Calls HistoryRead with ReadRawModifiedDetails and follows
+          continuation points until the range is covered or `--limit` is hit.
+
+          Times accept RFC 3339 (`2024-01-01T00:00:00Z`), a date
+          (`2024-01-01`), or an offset from now (`-2h`, `-30m`). `--last` is
+          shorthand for a range ending now.
+        arguments:
+          - $ref: "#/components/arguments/node"
+        flags:
+          - name: last
+            description: Read the values of the last interval, ending now.
+            format: duration
+            default: 1h
+          - name: start
+            description: Start of the range; overrides --last.
+          - name: end
+            description: End of the range; defaults to now.
+          - name: limit
+            description: Stop after this many values (0 = no limit).
+            type: integer
+            default: 1000
+          - name: bounds
+            description: Include the bounding values either side of the range.
+            type: boolean
+          - name: modified
+            description: Read modified values instead of raw ones.
+            type: boolean
+          - $ref: "#/components/flags/format-table-jsonl"
+        examples:
+          - command: opcua history read 'ns=2;s=Temperature' --last 24h
+            description: A day of archived values.
+          - command: opcua history read 'ns=2;s=Temperature' --start -7d --format jsonl
+            description: Stream a week of values as JSONL.
+        output:
+          formatFlag: format
+          formats:
+            - format: table
+              default: true
+              description: One row per archived value.
+            - format: plain
+              description: Timestamp and value, tab-separated.
+            - format: json
+              schema:
+                $ref: "#/components/schemas/HistoryResult"
+            - format: yaml
+              schema:
+                $ref: "#/components/schemas/HistoryResult"
+            - format: jsonl
+              description: One archived value per line.
+              schema:
+                $ref: "#/components/schemas/HistoryValue"
+
+      - name: at
+        operationId: historyAt
+        description: Read the value of a node at specific points in time.
+        longDescription: |
+          Calls HistoryRead with ReadAtTimeDetails, which returns one value
+          per requested timestamp, interpolated or stepped by the server.
+        arguments:
+          - $ref: "#/components/arguments/node"
+        flags:
+          - name: time
+            description: A timestamp to read at; repeatable.
+            repeatable: true
+            required: true
+          - name: use-simple-bounds
+            description: Use simple bounding values instead of interpolating.
+            type: boolean
+          - $ref: "#/components/flags/format-table-jsonl"
+        output:
+          formatFlag: format
+          formats:
+            - format: table
+              default: true
+            - format: plain
+            - format: json
+              schema:
+                $ref: "#/components/schemas/HistoryResult"
+            - format: yaml
+              schema:
+                $ref: "#/components/schemas/HistoryResult"
+            - format: jsonl
+              schema:
+                $ref: "#/components/schemas/HistoryValue"
+
+      - name: events
+        operationId: historyEvents
+        description: Read archived events of a notifier node.
+        longDescription: |
+          Calls HistoryRead with ReadEventDetails against a node that is an
+          event notifier, such as the Server object.
+
+          `--field` selects which event fields to retrieve, as browse paths
+          relative to the event type.
+        arguments:
+          - name: NODE
+            description: Event notifier to read from. Defaults to the Server object.
+            placeholder: node-id
+            required: false
+            default: i=2253
+        flags:
+          - name: last
+            description: Read events from the last interval, ending now.
+            format: duration
+            default: 1h
+          - name: start
+            description: Start of the range; overrides --last.
+          - name: end
+            description: End of the range; defaults to now.
+          - name: field
+            description: Event field to retrieve; repeatable.
+            repeatable: true
+            splitOnComma: true
+          - name: event-type
+            description: Only retrieve events of this event type.
+            default: i=2041
+          - name: limit
+            description: Stop after this many events (0 = no limit).
+            type: integer
+            default: 100
+          - $ref: "#/components/flags/format-table-jsonl"
+        output:
+          formatFlag: format
+          formats:
+            - format: table
+              default: true
+            - format: plain
+            - format: json
+              schema:
+                $ref: "#/components/schemas/EventList"
+            - format: yaml
+              schema:
+                $ref: "#/components/schemas/EventList"
+            - format: jsonl
+              schema:
+                $ref: "#/components/schemas/Event"
+
+  # ─── metadata ─────────────────────────────────────────────────────────────
+  - name: attributes
+    operationId: attributes
+    aliases: [attrs, describe]
+    description: Show every attribute of a node.
+    longDescription: |
+      Reads all attributes defined for the node's class in one Read call and
+      reports the ones the server answers. Attributes that do not apply come
+      back as BadAttributeIdInvalid and are hidden unless `--all` is given.
+
+      This is the fastest way to understand an unfamiliar node: its class,
+      data type, value rank, access level, historizing flag and more.
+    tags: [metadata]
+    arguments:
+      - $ref: "#/components/arguments/node"
+    flags:
+      - name: all
+        description: Include attributes the node does not support.
+        type: boolean
+      - $ref: "#/components/flags/format-table"
+    examples:
+      - command: opcua attributes 'ns=2;s=Temperature'
+        description: Describe a variable node.
+    output:
+      formatFlag: format
+      formats:
+        - format: table
+          default: true
+          description: Attribute, value and status.
+        - format: plain
+          description: Tab-separated attribute rows.
+        - format: json
+          schema:
+            $ref: "#/components/schemas/AttributeSet"
+        - format: yaml
+          schema:
+            $ref: "#/components/schemas/AttributeSet"
+
+  - name: types
+    aliases: [type]
+    description: Inspect data types and type definitions.
+    tags: [metadata, types]
+    commands:
+      - name: get
+        operationId: typeGet
+        description: Describe a data type, including its fields.
+        longDescription: |
+          Reports a type node's inheritance chain and, for a structure or
+          enumeration, the fields the server publishes in its
+          DataTypeDefinition attribute. That is what lets a client decode a
+          custom structure, so this is the command to reach for when a value
+          comes back as an opaque extension object.
+        arguments:
+          - $ref: "#/components/arguments/node"
+        flags:
+          - name: no-fields
+            description: Skip reading the DataTypeDefinition attribute.
+            type: boolean
+          - $ref: "#/components/flags/format-text"
+        output:
+          formatFlag: format
+          formats:
+            - format: text
+              default: true
+              description: Inheritance chain and field table.
+            - format: markdown
+              description: Rendered Markdown, for reading and for docs.
+            - format: json
+              schema:
+                $ref: "#/components/schemas/TypeInfo"
+            - format: yaml
+              schema:
+                $ref: "#/components/schemas/TypeInfo"
+
+      - name: of
+        operationId: typeOf
+        description: Show the data type of a variable.
+        longDescription: |
+          Reads a variable's DataType, ValueRank and ArrayDimensions and
+          resolves the data type node to its browse name, so an answer of
+          `i=11` is reported as `Double`.
+        arguments:
+          - $ref: "#/components/arguments/node"
+        flags:
+          - $ref: "#/components/flags/format-plain"
+        output:
+          formatFlag: format
+          formats:
+            - format: plain
+              default: true
+              description: The type name, ready to pipe.
+            - format: table
+              description: Type name, node id, rank and dimensions.
+            - format: json
+              schema:
+                $ref: "#/components/schemas/TypeOf"
+            - format: yaml
+              schema:
+                $ref: "#/components/schemas/TypeOf"
+
+      - name: list
+        operationId: typeList
+        description: List the type hierarchy of a server.
+        longDescription: |
+          Walks one of the type folders and reports the tree of types the
+          server defines. Combine with `--namespace` to see only the types a
+          companion specification or a vendor added.
+        flags:
+          - name: kind
+            description: "Which hierarchy: data, object, variable, reference, event."
+            choices: [data, object, variable, reference, event]
+            default: data
+          - name: depth
+            short: d
+            description: Levels to descend (0 = no limit).
+            type: integer
+            default: 0
+          - name: namespace
+            description: Only report types in this namespace index; repeatable.
+            repeatable: true
+            splitOnComma: true
+          - name: limit
+            description: Stop after this many types (0 = no limit).
+            type: integer
+            default: 0
+          - $ref: "#/components/flags/format-tree-notree"
+        examples:
+          - command: opcua types list --kind event
+            description: Show the event type hierarchy.
+          - command: opcua types list --namespace 2
+            description: Show only the data types a vendor namespace adds.
+        output:
+          formatFlag: format
+          formats:
+            - format: tree
+              default: true
+              description: Indented type hierarchy.
+            - format: table
+              description: One row per type.
+            - format: plain
+              description: Tab-separated type rows.
+            - format: json
+              schema:
+                $ref: "#/components/schemas/NodeList"
+            - format: yaml
+              schema:
+                $ref: "#/components/schemas/NodeList"
+
+  - name: namespaces
+    operationId: namespaces
+    aliases: [ns]
+    description: List the namespace array of a server.
+    longDescription: |
+      Reads Server/NamespaceArray. The index of a URI in this array is the
+      `ns=` prefix of every node id in that namespace, and it is only stable
+      for one session on some servers, so resolve names to indexes rather than
+      hard-coding them.
+    tags: [metadata]
+    flags:
+      - $ref: "#/components/flags/format-table"
+    output:
+      formatFlag: format
+      formats:
+        - format: table
+          default: true
+          description: Index and URI.
+        - format: plain
+          description: Tab-separated index and URI.
+        - format: json
+          schema:
+            $ref: "#/components/schemas/NamespaceList"
+        - format: yaml
+          schema:
+            $ref: "#/components/schemas/NamespaceList"
+
+  # ─── server ───────────────────────────────────────────────────────────────
+  - name: server
+    description: Inspect a server's status, capabilities and diagnostics.
+    tags: [server]
+    commands:
+      - name: info
+        operationId: serverInfo
+        aliases: [status]
+        description: Show server status, build info and uptime.
+        longDescription: |
+          Reads Server/ServerStatus: the run state, start time, build info and
+          the server's own clock, plus the service level that a redundant pair
+          uses to advertise which member to prefer.
+        flags:
+          - $ref: "#/components/flags/format-text"
+        examples:
+          - command: opcua server info
+            description: Status of the active profile's server.
+          - command: opcua server info --format markdown
+            description: Rendered Markdown, for pasting into a report.
+        output:
+          formatFlag: format
+          formats:
+            - format: text
+              default: true
+              description: Styled key/value summary.
+            - format: markdown
+              description: Rendered Markdown.
+            - format: json
+              schema:
+                $ref: "#/components/schemas/ServerInfo"
+            - format: yaml
+              schema:
+                $ref: "#/components/schemas/ServerInfo"
+
+      - name: capabilities
+        operationId: serverCapabilities
+        aliases: [caps]
+        description: Show operational limits and supported profiles.
+        longDescription: |
+          Reads Server/ServerCapabilities: the maximum nodes a single Read,
+          Write, Browse or HistoryRead may carry, the minimum supported
+          sampling rate, and the conformance profiles the server claims.
+
+          Worth checking before a bulk operation: exceeding a limit earns a
+          BadTooManyOperations instead of a partial result.
+        flags:
+          - $ref: "#/components/flags/format-text"
+        output:
+          formatFlag: format
+          formats:
+            - format: text
+              default: true
+            - format: markdown
+            - format: json
+              schema:
+                $ref: "#/components/schemas/Capabilities"
+            - format: yaml
+              schema:
+                $ref: "#/components/schemas/Capabilities"
+
+      - name: diagnostics
+        operationId: serverDiagnostics
+        aliases: [diag]
+        description: Show diagnostic counters for the server and its sessions.
+        longDescription: |
+          Reads Server/ServerDiagnostics. Diagnostics are optional and are
+          often disabled by default; if the counters come back as
+          BadNodeIdUnknown, set EnabledFlag on the server first.
+        flags:
+          - name: sessions
+            description: Include the per-session diagnostics array.
+            type: boolean
+          - $ref: "#/components/flags/format-text"
+        output:
+          formatFlag: format
+          formats:
+            - format: text
+              default: true
+            - format: markdown
+            - format: json
+              schema:
+                $ref: "#/components/schemas/Diagnostics"
+            - format: yaml
+              schema:
+                $ref: "#/components/schemas/Diagnostics"
+
+      - name: redundancy
+        operationId: serverRedundancy
+        aliases: [ha]
+        description: Show redundancy support and the failover server set.
+        longDescription: |
+          Reads Server/ServerRedundancy: which redundancy mode the server
+          supports, the URIs of the other members of the set, and the current
+          service level.
+
+          A cold or warm pair expects a client to fail over on its own, which
+          is what a profile's endpoint list is for: `--endpoint` may be
+          repeated, and every command tries them in order.
+        flags:
+          - $ref: "#/components/flags/format-text"
+        output:
+          formatFlag: format
+          formats:
+            - format: text
+              default: true
+            - format: markdown
+            - format: json
+              schema:
+                $ref: "#/components/schemas/Redundancy"
+            - format: yaml
+              schema:
+                $ref: "#/components/schemas/Redundancy"
+
+  - name: ping
+    operationId: ping
+    description: Check that a server answers, and how quickly.
+    longDescription: |
+      Opens a secure channel, activates a session, reads the server clock and
+      reports how long each step took. Repeats with `--count`.
+
+      Use it to tell a network problem from an authentication problem: the
+      channel timing covers TCP and the security handshake, the session
+      timing covers the credentials.
+    tags: [server]
+    flags:
+      - name: count
+        short: c
+        description: Number of probes to send (0 = until interrupted).
+        type: integer
+        default: 1
+      - name: interval
+        short: i
+        description: Wait between probes.
+        format: duration
+        default: 1s
+      - $ref: "#/components/flags/format-plain"
+    examples:
+      - command: opcua ping
+        description: One probe against the active profile.
+      - command: opcua ping --count 0 --interval 2s
+        description: Keep probing until interrupted.
+    output:
+      formatFlag: format
+      formats:
+        - format: plain
+          default: true
+          description: One line per probe.
+        - format: table
+          description: Timings per phase, with a summary.
+        - format: json
+          schema:
+            $ref: "#/components/schemas/PingResultList"
+        - format: yaml
+          schema:
+            $ref: "#/components/schemas/PingResultList"
+
+  # ─── subscriptions ────────────────────────────────────────────────────────
+  - name: monitor
+    operationId: monitor
+    aliases: [watch, sub]
+    description: Stream value changes of nodes as they happen.
+    longDescription: |
+      Creates a subscription, monitors every node given, and prints each data
+      change as it arrives until interrupted.
+
+      `--interval` is the publishing interval the server sends batches at;
+      `--sampling` is how often it samples the node, and defaults to the
+      publishing interval. A deadband suppresses small changes: `--deadband
+      absolute --deadband-value 0.5` reports only moves of half a unit or
+      more.
+
+      The default `live` renderer keeps one row per node, updating in place,
+      with a sparkline of recent numeric values. Use `--format jsonl` to pipe
+      the stream somewhere else.
+    tags: [subscriptions]
+    arguments:
+      - name: NODE
+        description: Nodes to monitor.
+        placeholder: node-id
+        required: true
+        variadic: true
+    flags:
+      - name: interval
+        short: i
+        description: Publishing interval of the subscription.
+        format: duration
+        default: 500ms
+      - name: sampling
+        description: Sampling interval per item; defaults to --interval.
+        format: duration
+        default: 0s
+      - name: queue-size
+        description: Server-side queue depth per monitored item.
+        type: integer
+        default: 10
+      - name: discard-oldest
+        description: Drop the oldest queued value when the queue is full.
+        type: boolean
+        default: true
+      - name: trigger
+        description: "What counts as a change: status, status-value, status-value-timestamp."
+        choices: [status, status-value, status-value-timestamp]
+        default: status-value
+      - name: deadband
+        description: "Deadband kind: none, absolute, percent."
+        choices: [none, absolute, percent]
+        default: none
+      - name: deadband-value
+        description: Deadband size, in units or percent of range.
+        type: number
+        default: 0
+      - name: monitoring-mode
+        description: "Monitoring mode: reporting, sampling, disabled."
+        choices: [reporting, sampling, disabled]
+        default: reporting
+      - name: priority
+        description: Subscription priority, 0 to 255.
+        type: integer
+        default: 0
+      - name: lifetime-count
+        description: Publishing intervals before the subscription expires.
+        type: integer
+        default: 0
+      - name: keepalive-count
+        description: Publishing intervals between keep-alive messages.
+        type: integer
+        default: 0
+      - name: timestamps
+        description: "Timestamps to return: source, server, both, neither."
+        choices: [source, server, both, neither]
+        default: both
+      - name: duration
+        description: Stop after this long (0 = until interrupted).
+        format: duration
+        default: 0s
+      - name: count
+        short: c
+        description: Stop after this many notifications (0 = no limit).
+        type: integer
+        default: 0
+      - name: stats
+        description: Show delivered and dropped counters while streaming.
+        type: boolean
+      - name: stdin
+        description: Read additional node ids from stdin, one per line.
+        type: boolean
+      - $ref: "#/components/flags/format-live"
+    stdin:
+      description: Node ids, one per line, when --stdin is set.
+      format: text
+    examples:
+      - command: opcua monitor 'ns=2;s=Temperature' 'ns=2;s=Pressure'
+        description: Watch two nodes in a live table.
+      - command: opcua monitor 'ns=2;s=Flow' --interval 100ms --deadband absolute --deadband-value 0.1
+        description: Fast sampling, ignoring changes under 0.1.
+      - command: opcua monitor 'ns=2;s=Temperature' --format jsonl | tee log.jsonl
+        description: Stream changes as JSONL into a file.
+      - command: opcua find --class variable temperature --format plain | opcua monitor --stdin
+        description: Monitor everything a search turned up.
+    output:
+      formatFlag: format
+      formats:
+        - format: live
+          default: true
+          description: One row per node, updated in place, with sparklines.
+        - format: plain
+          description: One line per change, appended as it arrives.
+        - format: csv
+          description: CSV with a header, for spreadsheets.
+        - format: jsonl
+          description: One JSON object per change.
+
+  - name: events
+    operationId: events
+    aliases: [alarms]
+    description: Stream events and alarms from a notifier node.
+    longDescription: |
+      Subscribes to the EventNotifier attribute of a node and prints each
+      event as it arrives.
+
+      `--field` chooses the event fields to select, as browse paths relative
+      to the event type; the defaults cover the base event type.
+      `--severity-min` installs a server-side where clause so the server only
+      sends events at or above that severity.
+    tags: [subscriptions]
+    arguments:
+      - name: NODE
+        description: Event notifier to subscribe to. Defaults to the Server object.
+        placeholder: node-id
+        required: false
+        default: i=2253
+    flags:
+      - name: field
+        description: Event field to select; repeatable.
+        repeatable: true
+        splitOnComma: true
+      - name: event-type
+        description: Only report events of this event type.
+        default: i=2041
+      - name: severity-min
+        description: Only report events at or above this severity, 1 to 1000.
+        type: integer
+        default: 0
+      - name: interval
+        short: i
+        description: Publishing interval of the subscription.
+        format: duration
+        default: 1s
+      - name: queue-size
+        description: Server-side queue depth for the notifier.
+        type: integer
+        default: 100
+      - name: duration
+        description: Stop after this long (0 = until interrupted).
+        format: duration
+        default: 0s
+      - name: count
+        short: c
+        description: Stop after this many events (0 = no limit).
+        type: integer
+        default: 0
+      - $ref: "#/components/flags/format-live"
+    examples:
+      - command: opcua events
+        description: Watch the server's own event stream.
+      - command: opcua events --severity-min 500 --format jsonl
+        description: Stream significant events as JSONL.
+    output:
+      formatFlag: format
+      formats:
+        - format: live
+          default: true
+          description: Scrolling event log, styled by severity.
+        - format: plain
+          description: One line per event.
+        - format: csv
+          description: CSV with a header.
+        - format: jsonl
+          description: One JSON object per event.
+
+  # ─── explorer ─────────────────────────────────────────────────────────────
+  - name: tui
+    operationId: tui
+    aliases: [explore, ui]
+    description: Explore a server in a full-screen interactive browser.
+    longDescription: |
+      Opens the address space explorer: an expandable tree of the address space
+      on the left, and the selected node's attributes, type, references and live
+      values on the right.
+
+      Move with the arrow keys or hjkl. Right expands a branch in place and left
+      collapses it, so the shape of the server builds up as you walk it; each
+      level is fetched once and kept. Enter re-roots the tree at the selected
+      node, which is how to get past a branch too deep to read, and escape goes
+      back up.
+
+      `/` filters the tree, keeping any branch whose descendant matches. `:`
+      opens the command bar for a node id, a standard name, or a browse path.
+      `tab` moves the keyboard to the detail pane, where left and right change
+      tab and up and down scroll. `w` adds the selected variable to the watch
+      panel, which subscribes to it and plots it. `?` lists every key.
+    tags: [browse]
+    flags:
+      - name: node
+        description: Node to open at.
+        default: i=85
+      - name: refresh
+        description: How often to re-read values of the visible level.
+        format: duration
+        default: 2s
+      - name: theme
+        description: "Colour theme: charm, nord, dracula, mono."
+        choices: [charm, nord, dracula, mono]
+        default: charm
+      - name: watch
+        description: Add these nodes to the watch panel on startup; repeatable.
+        repeatable: true
+        splitOnComma: true
+    examples:
+      - command: opcua tui
+        description: Explore the active profile's server.
+      - command: opcua tui --node 'ns=2;s=Machine' --theme nord
+        description: Open at a node with a different theme.
+
+  # ─── configuration ────────────────────────────────────────────────────────
+  - name: config
+    aliases: [cfg]
+    description: Manage connection profiles.
+    tags: [config]
+    commands:
+      - name: init
+        operationId: configInit
+        description: Create a profile, interactively by default.
+        longDescription: |
+          Writes a profile into the configuration file. With no flags it asks
+          for each setting in a form, offering the endpoints and security
+          policies the server actually advertises.
+
+          Pass `--non-interactive` to write a profile from flags alone, which
+          is what a provisioning script wants.
+        flags:
+          - name: name
+            description: Profile name to create or replace.
+            default: default
+          - name: non-interactive
+            description: Do not prompt; take every value from flags.
+            type: boolean
+          - name: force
+            description: Replace the profile if it already exists.
+            type: boolean
+          - name: default
+            description: Make this the default profile.
+            type: boolean
+            default: true
+        examples:
+          - command: opcua config init
+            description: Set up a profile with the interactive form.
+          - command: opcua config init --name plant --endpoint opc.tcp://plant:4840 --non-interactive
+            description: Write a profile without prompting.
+
+      - name: show
+        operationId: configShow
+        description: Show the resolved configuration.
+        longDescription: |
+          Prints the settings a command would connect with: the profile from
+          the file, with flag and environment overrides applied.
+
+          Passwords are redacted unless `--reveal` is given.
+        flags:
+          - name: all
+            description: Show every profile instead of the active one.
+            type: boolean
+          - name: reveal
+            description: Print secrets instead of redacting them.
+            type: boolean
+          - $ref: "#/components/flags/format-yaml"
+        output:
+          formatFlag: format
+          formats:
+            - format: yaml
+              default: true
+              description: The configuration as YAML.
+            - format: json
+              description: The configuration as JSON.
+            - format: text
+              description: Styled key/value summary.
+
+      - name: list
+        operationId: configList
+        aliases: [profiles]
+        description: List the configured profiles.
+        flags:
+          - $ref: "#/components/flags/format-table"
+        output:
+          formatFlag: format
+          formats:
+            - format: table
+              default: true
+            - format: plain
+            - format: json
+              schema:
+                $ref: "#/components/schemas/ProfileList"
+            - format: yaml
+              schema:
+                $ref: "#/components/schemas/ProfileList"
+
+      - name: use
+        operationId: configUse
+        description: Make a profile the default.
+        arguments:
+          # NAME, not PROFILE: the global --profile flag owns that field name.
+          - name: NAME
+            description: Profile to make the default.
+            placeholder: profile
+            required: true
+
+      - name: set
+        operationId: configSet
+        description: Set one setting of a profile.
+        longDescription: |
+          Sets a dotted key in a profile, creating the profile if needed.
+
+          Keys mirror the file: `endpoint`, `security.policy`, `security.mode`,
+          `auth.mode`, `auth.username`, `auth.password`, `session.timeout`,
+          and so on. Run `opcua config show --format yaml` to see them all.
+        arguments:
+          # SETTING, not KEY: the global --key flag owns that field name.
+          - name: SETTING
+            description: Dotted setting name, e.g. security.policy.
+            placeholder: key
+            required: true
+          - name: VALUE
+            description: Value to set.
+            placeholder: value
+            required: true
+        flags:
+          - name: name
+            description: Profile to modify; defaults to the active one.
+        examples:
+          - command: opcua config set security.policy Basic256Sha256
+            description: Change the security policy of the active profile.
+          - command: opcua config set --name plant endpoint opc.tcp://plant:4840
+            description: Change the endpoint of a named profile.
+
+      - name: remove
+        operationId: configRemove
+        aliases: [rm]
+        description: Delete a profile.
+        arguments:
+          - name: NAME
+            description: Profile to delete.
+            placeholder: profile
+            required: true
+        flags:
+          - name: yes
+            short: y
+            description: Skip the confirmation prompt.
+            type: boolean
+
+      - name: path
+        operationId: configPath
+        description: Print the path of the configuration file.
+
+  # ─── certificates ─────────────────────────────────────────────────────────
+  - name: cert
+    description: Manage the client certificate used for secure channels.
+    tags: [security]
+    commands:
+      - name: generate
+        operationId: certGenerate
+        aliases: [gen]
+        description: Create a self-signed client certificate and key.
+        longDescription: |
+          Writes a certificate and private key suitable for OPC UA client
+          authentication, with the application URI in a subject alternative
+          name as the specification requires.
+
+          The server will reject the certificate until it is trusted; most
+          servers move a rejected certificate into a folder for an operator to
+          approve, so expect to connect once, approve, then connect again.
+        flags:
+          - name: out-dir
+            short: o
+            description: Directory to write cert.pem and key.pem into.
+            type: path
+          - name: common-name
+            description: Certificate common name.
+            default: opcuacli
+          - name: dns
+            description: DNS name to add as a subject alternative name; repeatable.
+            repeatable: true
+            splitOnComma: true
+          - name: ip
+            description: IP address to add as a subject alternative name; repeatable.
+            repeatable: true
+            splitOnComma: true
+          - name: bits
+            description: RSA key size in bits.
+            type: integer
+            default: 2048
+          - name: days
+            description: Validity period in days.
+            type: integer
+            default: 3650
+          - name: force
+            description: Overwrite existing files.
+            type: boolean
+          - name: update-profile
+            description: Point the active profile at the new certificate.
+            type: boolean
+            default: true
+        examples:
+          - command: opcua cert generate
+            description: Create a certificate and register it with the active profile.
+
+      - name: show
+        operationId: certShow
+        description: Show certificate details, locally or from a server.
+        longDescription: |
+          With no argument this fetches the certificate the server presents on
+          its endpoints, which is how to check an expiry or a thumbprint
+          without a session. Give a file to inspect a local certificate
+          instead.
+        arguments:
+          - name: FILE
+            description: Certificate file to inspect; omit to fetch the server's.
+            placeholder: file
+            type: file
+            required: false
+        flags:
+          - $ref: "#/components/flags/format-text-notable"
+        output:
+          formatFlag: format
+          formats:
+            - format: text
+              default: true
+              description: Styled certificate summary.
+            - format: json
+              schema:
+                $ref: "#/components/schemas/CertificateInfo"
+            - format: yaml
+              schema:
+                $ref: "#/components/schemas/CertificateInfo"
+
+components:
+  arguments:
+    node:
+      name: NODE
+      description: Node id, e.g. i=2253 or ns=2;s=Machine/Temperature.
+      placeholder: node-id
+      required: true
+    # Named DISCOVERY_URL rather than ENDPOINT because the global --endpoint
+    # flag already claims the Endpoint parameter field.
+    endpoint:
+      name: DISCOVERY_URL
+      description: Discovery URL. Defaults to the endpoint of the active profile.
+      placeholder: endpoint
+      required: false
+
+  flags:
+    # Output selectors. Each command declares the subset of formats it can
+    # actually produce, so the choice lists differ; they share a name and
+    # shorthand so muscle memory carries across commands.
+    format-table:
+      name: format
+      short: f
+      description: "Output format: table, plain, json, yaml."
+      choices: [table, plain, json, yaml]
+      default: table
+    format-table-jsonl:
+      name: format
+      short: f
+      description: "Output format: table, plain, json, yaml, jsonl."
+      choices: [table, plain, json, yaml, jsonl]
+      default: table
+    format-tree:
+      name: format
+      short: f
+      description: "Output format: tree, table, plain, json, yaml, jsonl."
+      choices: [tree, table, plain, json, yaml, jsonl]
+      default: tree
+    format-tree-notree:
+      name: format
+      short: f
+      description: "Output format: tree, table, plain, json, yaml."
+      choices: [tree, table, plain, json, yaml]
+      default: tree
+    format-plain:
+      name: format
+      short: f
+      description: "Output format: plain, table, json, yaml."
+      choices: [plain, table, json, yaml]
+      default: plain
+    format-plain-nolist:
+      name: format
+      short: f
+      description: "Output format: plain, json, yaml."
+      choices: [plain, json, yaml]
+      default: plain
+    format-text:
+      name: format
+      short: f
+      description: "Output format: text, markdown, json, yaml."
+      choices: [text, markdown, json, yaml]
+      default: text
+    format-text-notable:
+      name: format
+      short: f
+      description: "Output format: text, json, yaml."
+      choices: [text, json, yaml]
+      default: text
+    format-yaml:
+      name: format
+      short: f
+      description: "Output format: yaml, json, text."
+      choices: [yaml, json, text]
+      default: yaml
+    format-live:
+      name: format
+      short: f
+      description: "Output format: live, plain, csv, jsonl."
+      choices: [live, plain, csv, jsonl]
+      default: live
+
+  schemas:
+    # ─── discovery ──────────────────────────────────────────────────────────
+    Endpoint:
+      type: object
+      description: One endpoint an OPC UA server offers.
+      required:
+        [
+          endpointUrl,
+          securityPolicy,
+          securityMode,
+          securityLevel,
+          userTokenTypes,
+        ]
+      properties:
+        endpointUrl:
+          type: string
+          description: URL a client connects to for this endpoint.
+        securityPolicy:
+          type: string
+          description: Security policy short name, e.g. Basic256Sha256.
+        securityPolicyUri:
+          type: string
+          description: Full security policy URI.
+        securityMode:
+          type: string
+          description: Message security mode, e.g. SignAndEncrypt.
+        securityLevel:
+          type: integer
+          description: The server's own ranking of this endpoint.
+        transportProfileUri:
+          type: string
+        userTokenTypes:
+          type: array
+          description: User token types this endpoint accepts.
+          items:
+            type: string
+        applicationName:
+          type: string
+        applicationUri:
+          type: string
+        productUri:
+          type: string
+        applicationType:
+          type: string
+        gatewayServerUri:
+          type: string
+        discoveryUrls:
+          type: array
+          items:
+            type: string
+        certificate:
+          $ref: "#/components/schemas/CertificateInfo"
+
+    EndpointList:
+      type: array
+      items:
+        $ref: "#/components/schemas/Endpoint"
+
+    Server:
+      type: object
+      description: An application description returned by FindServers.
+      required: [applicationUri, applicationType]
+      properties:
+        applicationUri:
+          type: string
+        productUri:
+          type: string
+        applicationName:
+          type: string
+        applicationType:
+          type: string
+        gatewayServerUri:
+          type: string
+        discoveryProfileUri:
+          type: string
+        discoveryUrls:
+          type: array
+          items:
+            type: string
+
+    ServerList:
+      type: array
+      items:
+        $ref: "#/components/schemas/Server"
+
+    NetworkServer:
+      type: object
+      description: A server announced on the network via mDNS.
+      required: [recordId, serverName, discoveryUrl]
+      properties:
+        recordId:
+          type: integer
+        serverName:
+          type: string
+        discoveryUrl:
+          type: string
+        serverCapabilities:
+          type: array
+          items:
+            type: string
+
+    NetworkServerList:
+      type: array
+      items:
+        $ref: "#/components/schemas/NetworkServer"
+
+    # ─── address space ──────────────────────────────────────────────────────
+    Node:
+      type: object
+      description: A node found by browsing or searching the address space.
+      required: [nodeId, browseName, nodeClass]
+      properties:
+        nodeId:
+          type: string
+          description: Node id in the canonical ns=;i= form.
+        namespace:
+          type: integer
+        browseName:
+          type: string
+        displayName:
+          type: string
+        description:
+          type: string
+        nodeClass:
+          type: string
+          description: Object, Variable, Method, ObjectType, DataType, ...
+        path:
+          type: string
+          description: Slash-separated browse path from the starting node.
+        depth:
+          type: integer
+          description: Levels below the starting node.
+        typeDefinition:
+          type: string
+        referenceType:
+          type: string
+          description: Reference that led to this node.
+        isForward:
+          type: boolean
+        dataType:
+          type: string
+          description: Data type name, for variables.
+        value:
+          description: Current value, when values were requested.
+        valueStatus:
+          type: string
+          description: Status code of the value read.
+        accessLevel:
+          type: string
+          description: Access level flags, e.g. CurrentRead|CurrentWrite.
+        children:
+          type: array
+          description: Nested nodes, when the walk descended.
+          items:
+            $ref: "#/components/schemas/Node"
+
+    NodeList:
+      type: array
+      items:
+        $ref: "#/components/schemas/Node"
+
+    Reference:
+      type: object
+      description: One reference of a node.
+      required: [referenceType, isForward, nodeId, browseName, nodeClass]
+      properties:
+        referenceType:
+          type: string
+          description: Browse name of the reference type.
+        referenceTypeId:
+          type: string
+        isForward:
+          type: boolean
+        nodeId:
+          type: string
+        browseName:
+          type: string
+        displayName:
+          type: string
+        nodeClass:
+          type: string
+        typeDefinition:
+          type: string
+
+    ReferenceList:
+      type: array
+      items:
+        $ref: "#/components/schemas/Reference"
+
+    ResolvedPath:
+      type: object
+      description: The outcome of translating one browse path.
+      required: [path, status]
+      properties:
+        path:
+          type: string
+        nodeId:
+          type: string
+        browseName:
+          type: string
+        status:
+          type: string
+          description: Status code of the translation.
+
+    ResolvedPathList:
+      type: array
+      items:
+        $ref: "#/components/schemas/ResolvedPath"
+
+    # ─── values ─────────────────────────────────────────────────────────────
+    ReadResult:
+      type: object
+      description: One attribute read from one node.
+      required: [nodeId, attribute, status]
+      properties:
+        nodeId:
+          type: string
+        attribute:
+          type: string
+        value:
+          description: The value, as its natural JSON type.
+        text:
+          type: string
+          description: Human-readable rendering of the value.
+        type:
+          type: string
+          description: Variant type of the value, e.g. Double.
+        dataType:
+          type: string
+          description: Declared data type of the node.
+        arrayDimensions:
+          type: array
+          items:
+            type: integer
+        status:
+          type: string
+          description: Status code of this read.
+        sourceTimestamp:
+          type: string
+          format: date-time
+        serverTimestamp:
+          type: string
+          format: date-time
+
+    ReadResultList:
+      type: array
+      items:
+        $ref: "#/components/schemas/ReadResult"
+
+    WriteResult:
+      type: object
+      description: The outcome of a write.
+      required: [nodeId, attribute, status, ok]
+      properties:
+        nodeId:
+          type: string
+        attribute:
+          type: string
+        type:
+          type: string
+          description: Variant type the value was written as.
+        value:
+          description: The value that was written.
+        status:
+          type: string
+        ok:
+          type: boolean
+        dryRun:
+          type: boolean
+
+    MethodArgument:
+      type: object
+      description: One input or output argument of a method.
+      required: [name, dataType]
+      properties:
+        name:
+          type: string
+        dataType:
+          type: string
+        valueRank:
+          type: integer
+        description:
+          type: string
+        value:
+          description: The value passed or returned.
+
+    CallResult:
+      type: object
+      description: The outcome of a method call.
+      required: [object, method, status, ok]
+      properties:
+        object:
+          type: string
+        method:
+          type: string
+        methodName:
+          type: string
+        status:
+          type: string
+        ok:
+          type: boolean
+        inputs:
+          type: array
+          items:
+            $ref: "#/components/schemas/MethodArgument"
+        outputs:
+          type: array
+          items:
+            $ref: "#/components/schemas/MethodArgument"
+        inputStatuses:
+          type: array
+          description: Per-argument status codes, when an argument was rejected.
+          items:
+            type: string
+
+    HistoryValue:
+      type: object
+      description: One archived value.
+      required: [status]
+      properties:
+        nodeId:
+          type: string
+        value:
+          description: The archived value.
+        text:
+          type: string
+        status:
+          type: string
+        sourceTimestamp:
+          type: string
+          format: date-time
+        serverTimestamp:
+          type: string
+          format: date-time
+
+    HistoryResult:
+      type: object
+      description: Archived values of one node over a time range.
+      required: [nodeId, count]
+      properties:
+        nodeId:
+          type: string
+        start:
+          type: string
+          format: date-time
+        end:
+          type: string
+          format: date-time
+        count:
+          type: integer
+        truncated:
+          type: boolean
+          description: True when --limit stopped the read before the range ended.
+        values:
+          type: array
+          items:
+            $ref: "#/components/schemas/HistoryValue"
+
+    Event:
+      type: object
+      description: An event, read from history or received from a subscription.
+      required: [fields]
+      properties:
+        eventId:
+          type: string
+        eventType:
+          type: string
+        sourceName:
+          type: string
+        severity:
+          type: integer
+        message:
+          type: string
+        time:
+          type: string
+          format: date-time
+        receiveTime:
+          type: string
+          format: date-time
+        fields:
+          type: object
+          description: Every selected field, keyed by its browse path.
+          additionalProperties: true
+
+    EventList:
+      type: array
+      items:
+        $ref: "#/components/schemas/Event"
+
+    # ─── metadata ───────────────────────────────────────────────────────────
+    Attribute:
+      type: object
+      description: One attribute of a node.
+      required: [id, name, status]
+      properties:
+        id:
+          type: integer
+        name:
+          type: string
+        value:
+          description: The attribute value, as its natural JSON type.
+        text:
+          type: string
+          description: Human-readable rendering, including decoded bit flags.
+        type:
+          type: string
+        status:
+          type: string
+
+    AttributeSet:
+      type: object
+      description: Every attribute of one node.
+      required: [nodeId, nodeClass, attributes]
+      properties:
+        nodeId:
+          type: string
+        browseName:
+          type: string
+        displayName:
+          type: string
+        nodeClass:
+          type: string
+        attributes:
+          type: array
+          items:
+            $ref: "#/components/schemas/Attribute"
+
+    TypeField:
+      type: object
+      description: One field of a structure or enumeration data type.
+      required: [name]
+      properties:
+        name:
+          type: string
+        dataType:
+          type: string
+        valueRank:
+          type: integer
+        value:
+          type: integer
+          description: Numeric value, for an enumeration field.
+        isOptional:
+          type: boolean
+        maxStringLength:
+          type: integer
+        description:
+          type: string
+
+    TypeInfo:
+      type: object
+      description: A type node with its inheritance chain and fields.
+      required: [nodeId, browseName, nodeClass, kind]
+      properties:
+        nodeId:
+          type: string
+        browseName:
+          type: string
+        displayName:
+          type: string
+        description:
+          type: string
+        nodeClass:
+          type: string
+        kind:
+          type: string
+          description: builtin, structure, enumeration, option-set, or abstract.
+        isAbstract:
+          type: boolean
+        superTypes:
+          type: array
+          description: Inheritance chain, nearest ancestor first.
+          items:
+            type: string
+        subTypes:
+          type: array
+          items:
+            type: string
+        fields:
+          type: array
+          items:
+            $ref: "#/components/schemas/TypeField"
+        encodings:
+          type: array
+          description: Data type encodings the server publishes.
+          items:
+            type: string
+
+    TypeOf:
+      type: object
+      description: The declared type of a variable.
+      required: [nodeId, dataType, dataTypeId]
+      properties:
+        nodeId:
+          type: string
+        dataType:
+          type: string
+        dataTypeId:
+          type: string
+        builtinType:
+          type: string
+        valueRank:
+          type: integer
+        rank:
+          type: string
+          description: Scalar, Array, or a fixed dimension count.
+        arrayDimensions:
+          type: array
+          items:
+            type: integer
+        superTypes:
+          type: array
+          items:
+            type: string
+
+    Namespace:
+      type: object
+      description: One entry of the server's namespace array.
+      required: [index, uri]
+      properties:
+        index:
+          type: integer
+        uri:
+          type: string
+
+    NamespaceList:
+      type: array
+      items:
+        $ref: "#/components/schemas/Namespace"
+
+    # ─── server ─────────────────────────────────────────────────────────────
+    ServerInfo:
+      type: object
+      description: A server's status and build information.
+      required: [endpoint, state]
+      properties:
+        endpoint:
+          type: string
+        state:
+          type: string
+          description: Running, Failed, Suspended, Shutdown, ...
+        startTime:
+          type: string
+          format: date-time
+        currentTime:
+          type: string
+          format: date-time
+        uptime:
+          type: string
+        clockSkew:
+          type: string
+          description: Server clock minus local clock.
+        secondsTillShutdown:
+          type: integer
+        shutdownReason:
+          type: string
+        productName:
+          type: string
+        productUri:
+          type: string
+        manufacturerName:
+          type: string
+        softwareVersion:
+          type: string
+        buildNumber:
+          type: string
+        buildDate:
+          type: string
+          format: date-time
+        serviceLevel:
+          type: integer
+          description: 0 to 255; a redundant pair advertises the preferred member.
+        namespaces:
+          type: array
+          items:
+            $ref: "#/components/schemas/Namespace"
+
+    Capabilities:
+      type: object
+      description: Operational limits and conformance profiles of a server.
+      required: [endpoint]
+      properties:
+        endpoint:
+          type: string
+        minSupportedSampleRate:
+          type: number
+        maxBrowseContinuationPoints:
+          type: integer
+        maxQueryContinuationPoints:
+          type: integer
+        maxHistoryContinuationPoints:
+          type: integer
+        maxArrayLength:
+          type: integer
+        maxStringLength:
+          type: integer
+        maxByteStringLength:
+          type: integer
+        maxNodesPerRead:
+          type: integer
+        maxNodesPerWrite:
+          type: integer
+        maxNodesPerBrowse:
+          type: integer
+        maxNodesPerMethodCall:
+          type: integer
+        maxNodesPerRegisterNodes:
+          type: integer
+        maxNodesPerTranslate:
+          type: integer
+        maxNodesPerNodeManagement:
+          type: integer
+        maxNodesPerHistoryReadData:
+          type: integer
+        maxNodesPerHistoryReadEvents:
+          type: integer
+        maxNodesPerHistoryUpdateData:
+          type: integer
+        maxMonitoredItemsPerCall:
+          type: integer
+        serverProfiles:
+          type: array
+          items:
+            type: string
+        localeIds:
+          type: array
+          items:
+            type: string
+        softwareCertificates:
+          type: array
+          items:
+            type: string
+
+    Diagnostics:
+      type: object
+      description: Diagnostic counters for a server.
+      required: [endpoint, enabled]
+      properties:
+        endpoint:
+          type: string
+        enabled:
+          type: boolean
+          description: Whether the server has diagnostics collection switched on.
+        summary:
+          type: object
+          description: The ServerDiagnosticsSummary counters.
+          additionalProperties: true
+        sessions:
+          type: array
+          description: Per-session counters, when requested.
+          items:
+            type: object
+            additionalProperties: true
+        subscriptionCount:
+          type: integer
+        sessionCount:
+          type: integer
+        rejectedRequestsCount:
+          type: integer
+        securityRejectedRequestsCount:
+          type: integer
+
+    Redundancy:
+      type: object
+      description: A server's redundancy support and failover set.
+      required: [endpoint, support]
+      properties:
+        endpoint:
+          type: string
+        support:
+          type: string
+          description: None, Cold, Warm, Hot, Transparent, or HotAndMirrored.
+        transparent:
+          type: boolean
+          description: True when failover is the server's job, not the client's.
+        serviceLevel:
+          type: integer
+        serverUris:
+          type: array
+          description: The other members of the redundant set.
+          items:
+            type: string
+        configuredEndpoints:
+          type: array
+          description: The failover order this client is configured with.
+          items:
+            type: string
+
+    PingResult:
+      type: object
+      description: Timings of one connectivity probe.
+      required: [endpoint, ok, sequence]
+      properties:
+        sequence:
+          type: integer
+        endpoint:
+          type: string
+        ok:
+          type: boolean
+        error:
+          type: string
+        channel:
+          type: string
+          description: Time to open the secure channel.
+        session:
+          type: string
+          description: Time to create and activate the session.
+        read:
+          type: string
+          description: Time to read the server clock.
+        total:
+          type: string
+        securityPolicy:
+          type: string
+        securityMode:
+          type: string
+        serverTime:
+          type: string
+          format: date-time
+
+    PingResultList:
+      type: array
+      items:
+        $ref: "#/components/schemas/PingResult"
+
+    # ─── security ───────────────────────────────────────────────────────────
+    CertificateInfo:
+      type: object
+      description: Details of an X.509 certificate.
+      required: [subject, issuer, notBefore, notAfter]
+      properties:
+        subject:
+          type: string
+        issuer:
+          type: string
+        serialNumber:
+          type: string
+        notBefore:
+          type: string
+          format: date-time
+        notAfter:
+          type: string
+          format: date-time
+        expired:
+          type: boolean
+        selfSigned:
+          type: boolean
+        thumbprintSha1:
+          type: string
+        thumbprintSha256:
+          type: string
+        signatureAlgorithm:
+          type: string
+        publicKeyAlgorithm:
+          type: string
+        keyBits:
+          type: integer
+        applicationUri:
+          type: string
+          description: The URI an OPC UA application must carry in a SAN.
+        dnsNames:
+          type: array
+          items:
+            type: string
+        ipAddresses:
+          type: array
+          items:
+            type: string
+        keyUsage:
+          type: array
+          items:
+            type: string
+        extendedKeyUsage:
+          type: array
+          items:
+            type: string
+        path:
+          type: string
+          description: File the certificate was read from, when local.
+
+    # ─── configuration ──────────────────────────────────────────────────────
+    Profile:
+      type: object
+      description: A connection profile from the configuration file.
+      required: [name, endpoints, isDefault]
+      properties:
+        name:
+          type: string
+        isDefault:
+          type: boolean
+        endpoints:
+          type: array
+          description: Endpoints in failover order.
+          items:
+            type: string
+        securityPolicy:
+          type: string
+        securityMode:
+          type: string
+        authMode:
+          type: string
+        username:
+          type: string
+        certificate:
+          type: string
+        privateKey:
+          type: string
+        insecure:
+          type: boolean
+        requestTimeout:
+          type: string
+        sessionTimeout:
+          type: string
+        description:
+          type: string
+
+    ProfileList:
+      type: array
+      items:
+        $ref: "#/components/schemas/Profile"
