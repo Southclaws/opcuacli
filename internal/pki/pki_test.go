@@ -88,7 +88,7 @@ func TestWriteRefusesToOverwriteWithoutForce(t *testing.T) {
 		t.Errorf("Write with force: %v", err)
 	}
 
-	info, err := os.Stat(filepath.Join(directory, "key.pem"))
+	_, err := os.Stat(filepath.Join(directory, "key.pem"))
 	if err != nil {
 		t.Fatalf("Stat: %v", err)
 	}
