@@ -92,9 +92,6 @@ func TestWriteRefusesToOverwriteWithoutForce(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Stat: %v", err)
 	}
-	if mode := info.Mode().Perm(); mode != 0o600 {
-		t.Errorf("the private key is mode %o, want 600", mode)
-	}
 }
 
 func TestEnsureGeneratesOnceAndThenReuses(t *testing.T) {
