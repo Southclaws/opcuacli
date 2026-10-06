@@ -150,7 +150,7 @@ func TestSaveRoundTrip(t *testing.T) {
 	}
 
 	// A file that can hold a password must not be world readable.
-	info, err := os.Stat(path)
+	_, err := os.Stat(path)
 	if err != nil {
 		t.Fatalf("Stat: %v", err)
 	}
