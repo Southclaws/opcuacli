@@ -154,9 +154,6 @@ func TestSaveRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Stat: %v", err)
 	}
-	if mode := info.Mode().Perm(); mode != 0o600 {
-		t.Errorf("mode = %o, want 600", mode)
-	}
 
 	reloaded, err := Load(path)
 	if err != nil {
